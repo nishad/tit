@@ -91,6 +91,7 @@ try{$db = new PDO($DB_CONNECTION, $DB_USERNAME, $DB_PASSWORD);}
 catch (PDOException $e) {die("DB Connection failed: ".$e->getMessage());}
 
 $url = $_SERVER["REQUEST_SCHEME"].'://'.$_SERVER["SERVER_NAME"].':'.$_SERVER["SERVER_PORT"].$_SERVER["REQUEST_URI"];
+$baseUrl = substr($url, 0, strpos($url, '?'));
 
 if (isset($_GET['feed'])) {
    header('Content-Type: application/atom+xml');
@@ -105,10 +106,11 @@ if (isset($_GET['feed'])) {
       $updated = $maxEntry[0]['updated'];
    }
    $feed .= '<updated>'.htmlspecialchars($updated, ENT_XML1, 'UTF-8').'</updated>'."\r\n";
-   $entries = @$db->query("SELECT id, title, content, updated FROM notifications WHERE receiver_token='$token' ORDER BY updated");
+   $entries = @$db->query("SELECT id, issue_id, title, content, updated FROM notifications WHERE receiver_token='$token' ORDER BY updated DESC");
    foreach ($entries as $entry) {
       $feed .= '<entry>'."\r\n";
       $feed .= '<id>'.htmlspecialchars($url.'&id='.$entry['id'], ENT_XML1, 'UTF-8').'</id>'."\r\n";
+      $feed .= '<link href="'.htmlspecialchars($baseUrl.'?id='.$entry['issue_id'].'&notification='.$entry['id'], ENT_XML1, 'UTF-8').'"/>'."\r\n";
       $feed .= '<title>'.htmlspecialchars($entry['title'], ENT_XML1, 'UTF-8').'</title>'."\r\n";
       $feed .= '<updated>'.htmlspecialchars($entry['updated'], ENT_XML1, 'UTF-8').'</updated>'."\r\n";
       $feed .= '<content type="html"><pre>'.htmlspecialchars($entry['content'], ENT_XML1, 'UTF-8').'</pre></content>'."\r\n";
@@ -124,7 +126,7 @@ if (check_credentials($_SESSION['tit']['username'], $_SESSION['tit']['password']
 // create tables if not exist
 @$db->exec("CREATE TABLE issues (id INTEGER PRIMARY KEY, title TEXT, description TEXT, user TEXT, assigned_user TEXT, status INTEGER NOT NULL DEFAULT '0', priority INTEGER, notify_emails TEXT, entrytime DATETIME)");
 @$db->exec("CREATE TABLE comments (id INTEGER PRIMARY KEY, issue_id INTEGER, user TEXT, description TEXT, entrytime DATETIME)");
-@$db->exec("CREATE TABLE notifications (id INTEGER PRIMARY KEY, receiver_token TEXT, title TEXT, content TEXT, updated DATETIME)");
+@$db->exec("CREATE TABLE notifications (id INTEGER PRIMARY KEY, issue_id INTEGER, receiver_token TEXT, title TEXT, content TEXT, updated DATETIME)");
 
 // db migration
 // create col assigned_user in issues, if missing
@@ -363,8 +365,10 @@ function get_col($id, $table, $col){
 // notify via email
 function notify($id, $subject, $body){
 	global $db, $NOTIFY_METHOD;
-	$result = $db->query("SELECT notify_emails FROM issues WHERE id='$id'")->fetchAll();
+	$result = $db->query("SELECT title, notify_emails FROM issues WHERE id='$id'")->fetchAll();
 	$to = $result[0]['notify_emails'];
+	$issueTitle = $result[0]['title'];
+	$titledSubject = $subject.' ('.$issueTitle.')';
 
 	if ($to!=''){
 		if ($NOTIFY_METHOD['MAIL']) {
@@ -379,10 +383,12 @@ function notify($id, $subject, $body){
 				foreach ($USERS as $user) {
 					if ($user['email'] == $email && $user['feedToken']) {
 						$receiverToken = pdo_escape_string($user['feedToken']);
-						$title = pdo_escape_string($subject);
+						$title = pdo_escape_string($titledSubject);
 						$content = pdo_escape_string($body);
 						$now = date('c');
-						$query = "INSERT INTO notifications (receiver_token, title, content, updated) VALUES ('$receiverToken','$title','$content','$now')";
+						$query = "DELETE FROM notifications WHERE issue_id='$id' AND receiver_token= '$receiverToken'";
+						@$db->exec($query);
+						$query = "INSERT INTO notifications (issue_id, receiver_token, title, content, updated) VALUES ('$id', '$receiverToken','$title','$content','$now')";
 						@$db->exec($query);
 					}
 				}
@@ -420,6 +426,9 @@ function setWatch($id,$addToWatch){
 <head>
 	<title><?php echo $TITLE, isset($_GET["id"]) ? (" - #".$_GET["id"]) : "" , " - Issue Tracker"; ?></title>
 	<meta http-equiv="content-type" content="text/html;charset=utf-8" />
+	<?php if ($NOTIFY_METHOD['FEED'] && isset($_SESSION['tit']['feedToken'])) { ?>
+	<link rel="alternate" type="application/atom+xml" title="<?= htmlspecialchars('Issue Feed '.$TITLE) ?>" href="<?= htmlspecialchars($baseUrl.'?feed='.$_SESSION['tit']['feedToken']) ?>">
+	<?php } ?>
 	<style>
 		html { overflow-y: scroll;}
 		body { font-family: sans-serif; font-size: 11px; background-color: #aaa;}
@@ -503,7 +512,7 @@ function setWatch($id,$addToWatch){
 				echo "<td>{$issue['user']}</td>\n";
 				echo "<td>{$issue['entrytime']}</td>\n";
 				echo "<td>".($_SESSION['tit']['email']&&strpos($issue['notify_emails'],$_SESSION['tit']['email'])!==FALSE?"&#10003;":"")."</td>\n";
-				echo "<td>".($issue['comment_user'] ? date("M j",strtotime($issue['comment_time'])) . " (" . $issue['comment_user'] . ")" : "")."</td>\n";
+				echo "<td>".($issue['comment_user'] ? date("M j H:m",strtotime($issue['comment_time'])) . "<br/>(" . $issue['comment_user'] . ")" : "")."</td>\n";
 				echo "<td><a href='?editissue&id={$issue['id']}'>Edit</a>";
 				if ($_SESSION['tit']['admin'] || $_SESSION['tit']['username']==$issue['user']) echo " | <a href='?deleteissue&id={$issue['id']}' onclick='return confirm(\"Are you sure? All comments will be deleted too.\");'>Delete</a>";
 				echo "</td>\n";
