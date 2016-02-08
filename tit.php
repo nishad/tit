@@ -21,9 +21,9 @@ if (!defined("TIT_INCLUSION"))
 	// Optional fields: email, admin (true/false)
 
 	$USERS = array(
-		array("username"=>"admin","password"=>md5("admin"),"email"=>"admin@example.com","admin"=>true),
-		array("username"=>"user" ,"password"=>md5("user") ,"email"=>"user@example.com"),
-		array("username"=>"user2" ,"password"=>md5("user2") ,"email"=>"user2@example.com"),
+		array("username"=>"admin","password"=>md5("admin"),"email"=>"admin@example.com","feedToken"=>"26d52346951edaafca8abd1f5965b7f540e6c211", "admin"=>true),
+		array("username"=>"user" ,"password"=>md5("user") ,"email"=>"user@example.com","feedToken"=>"cba59a063ed86de87472374de025310034d127fb"),
+		array("username"=>"user2" ,"password"=>md5("user2") ,"email"=>"user2@example.com","feedToken"=>"9516b0b27608be668a75bb846d782b3c2aa2daf2"),
 	);
 
 	// PDO Connection string ()
@@ -41,6 +41,10 @@ if (!defined("TIT_INCLUSION"))
 	$NOTIFY["ISSUE_ASSIGNMENT"] = TRUE;     // issue assigned to an other user
 	$NOTIFY["ISSUE_PRIORITY"]   = TRUE;     // issue status change (solved / unsolved)
 	$NOTIFY["COMMENT_CREATE"]   = TRUE;     // comment post
+
+	// Select notification methods to use
+	$NOTIFY_METHOD['MAIL']      = FALSE;    // send notification via php mail(...)
+	$NOTIFY_METHOD['FEED']      = TRUE;     // put notification in users atom feed
 
 	// Modify this issue types
 	$STATUSES = array(0 => "Active", 1 => "Resolved");
@@ -82,16 +86,45 @@ $login_html = "<html><head><title>Tiny Issue Tracker</title><style>body,input{fo
 							 <label></label><input type='submit' name='login' value='Login' />
 							 </form></body></html>";
 
-// show login page on bad credential
-if (check_credentials($_SESSION['tit']['username'], $_SESSION['tit']['password'])==-1) die($login_html);
-
 // Check if db exists
 try{$db = new PDO($DB_CONNECTION, $DB_USERNAME, $DB_PASSWORD);}
 catch (PDOException $e) {die("DB Connection failed: ".$e->getMessage());}
 
+$url = $_SERVER["REQUEST_SCHEME"].'://'.$_SERVER["SERVER_NAME"].':'.$_SERVER["SERVER_PORT"].$_SERVER["REQUEST_URI"];
+
+if (isset($_GET['feed'])) {
+   header('Content-Type: application/atom+xml');
+   $feed = '<?xml version="1.0" encoding="UTF-8"?>'."\r\n";
+   $feed .= '<feed xmlns="http://www.w3.org/2005/Atom">'."\r\n";
+   $feed .= '<title>'.htmlspecialchars($TITLE, ENT_XML1, 'UTF-8').'</title>'."\r\n";
+   $feed .= '<id>'.htmlspecialchars($url, ENT_XML1, 'UTF-8').'</id>'."\r\n";
+   $updated = '1970-01-01T00:00:00Z';
+   $token = pdo_escape_string($_GET['feed']);
+   $maxEntry = @$db->query("SELECT max(updated) updated FROM notifications WHERE receiver_token='$token'")->fetchAll();
+   if (isset($maxEntry[0]['updated'])) {
+      $updated = $maxEntry[0]['updated'];
+   }
+   $feed .= '<updated>'.htmlspecialchars($updated, ENT_XML1, 'UTF-8').'</updated>'."\r\n";
+   $entries = @$db->query("SELECT id, title, content, updated FROM notifications WHERE receiver_token='$token' ORDER BY updated");
+   foreach ($entries as $entry) {
+      $feed .= '<entry>'."\r\n";
+      $feed .= '<id>'.htmlspecialchars($url.'&id='.$entry['id'], ENT_XML1, 'UTF-8').'</id>'."\r\n";
+      $feed .= '<title>'.htmlspecialchars($entry['title'], ENT_XML1, 'UTF-8').'</title>'."\r\n";
+      $feed .= '<updated>'.htmlspecialchars($entry['updated'], ENT_XML1, 'UTF-8').'</updated>'."\r\n";
+      $feed .= '<content type="html"><pre>'.htmlspecialchars($entry['content'], ENT_XML1, 'UTF-8').'</pre></content>'."\r\n";
+      $feed .= '</entry>'."\r\n";
+   }
+   $feed .= '</feed>'."\r\n";
+   die($feed);
+}
+
+// show login page on bad credential
+if (check_credentials($_SESSION['tit']['username'], $_SESSION['tit']['password'])==-1) die($login_html);
+
 // create tables if not exist
 @$db->exec("CREATE TABLE issues (id INTEGER PRIMARY KEY, title TEXT, description TEXT, user TEXT, assigned_user TEXT, status INTEGER NOT NULL DEFAULT '0', priority INTEGER, notify_emails TEXT, entrytime DATETIME)");
 @$db->exec("CREATE TABLE comments (id INTEGER PRIMARY KEY, issue_id INTEGER, user TEXT, description TEXT, entrytime DATETIME)");
+@$db->exec("CREATE TABLE notifications (id INTEGER PRIMARY KEY, receiver_token TEXT, title TEXT, content TEXT, updated DATETIME)");
 
 // db migration
 // create col assigned_user in issues, if missing
@@ -229,7 +262,7 @@ if (isset($_GET["changestatus"])){
 	if ($NOTIFY["ISSUE_STATUS"])
 		notify( $id,
 						"[$TITLE] Issue Marked as ".$STATUSES[$status],
-						"Issue marked as {$STATUSES[$status]} by {$_SESSION['u']}\r\nTitle: ".get_col($id,"issues","title")."\r\nURL: http://{$_SERVER['HTTP_HOST']}{$_SERVER['PHP_SELF']}?id=$id");
+						"Issue marked as {$STATUSES[$status]} by {$_SESSION['tit']['username']}\r\nTitle: ".get_col($id,"issues","title")."\r\nURL: http://{$_SERVER['HTTP_HOST']}{$_SERVER['PHP_SELF']}?id=$id");
 
 	header("Location: {$_SERVER['PHP_SELF']}?id=$id");
 }
@@ -243,7 +276,7 @@ if (isset($_GET["changeassignment"])){
 	if ($NOTIFY["ISSUE_ASSIGNMENT"])
 		notify( $id,
 						"[$TITLE] Issue assigned to ".$assigned_user,
-						"Issue assigned to $assigned_user by {$_SESSION['u']}\r\nTitle: ".get_col($id,"issues","title")."\r\nURL: http://{$_SERVER['HTTP_HOST']}{$_SERVER['PHP_SELF']}?id=$id");
+						"Issue assigned to $assigned_user by {$_SESSION['tit']['username']}\r\nTitle: ".get_col($id,"issues","title")."\r\nURL: http://{$_SERVER['HTTP_HOST']}{$_SERVER['PHP_SELF']}?id=$id");
 
 	header("Location: {$_SERVER['PHP_SELF']}?id=$id");
 }
@@ -329,15 +362,32 @@ function get_col($id, $table, $col){
 
 // notify via email
 function notify($id, $subject, $body){
-	global $db;
+	global $db, $NOTIFY_METHOD;
 	$result = $db->query("SELECT notify_emails FROM issues WHERE id='$id'")->fetchAll();
 	$to = $result[0]['notify_emails'];
 
 	if ($to!=''){
-		global $EMAIL;
-		$headers = "From: $EMAIL" . "\r\n" . 'X-Mailer: PHP/' . phpversion();
-
-		mail($to, $subject, $body, $headers);       // standard php mail, hope it passes spam filter :)
+		if ($NOTIFY_METHOD['MAIL']) {
+			global $EMAIL;
+			$headers = "From: $EMAIL" . "\r\n" . 'X-Mailer: PHP/' . phpversion();
+			mail($to, $subject, $body, $headers);       // standard php mail, hope it passes spam filter :)
+		}
+		if ($NOTIFY_METHOD['FEED']) {
+			global $USERS;
+			$emails = explode(',', $to);
+			foreach ($emails as $email) {
+				foreach ($USERS as $user) {
+					if ($user['email'] == $email && $user['feedToken']) {
+						$receiverToken = pdo_escape_string($user['feedToken']);
+						$title = pdo_escape_string($subject);
+						$content = pdo_escape_string($body);
+						$now = date('c');
+						$query = "INSERT INTO notifications (receiver_token, title, content, updated) VALUES ('$receiverToken','$title','$content','$now')";
+						@$db->exec($query);
+					}
+				}
+			}
+		}
 	}
 
 }
